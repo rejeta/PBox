@@ -8,7 +8,6 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/wailsapp/wails/v2 v2.10.1
 	golang.org/x/crypto v0.33.0
-	gopkg.in/ini.v1 v1.67.0
 	gorm.io/gorm v1.30.0
 )
 

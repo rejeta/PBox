@@ -3,3 +3,8 @@ PasswordBox/Box.db
 *.md
 .claude
 PasswordBox/build
+test
+*.out
+*.bat
+*.sh
+*_test.go
