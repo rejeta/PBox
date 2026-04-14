@@ -15,16 +15,18 @@ export function Lock():Promise<void>;
 
 export function Login(arg1:string,arg2:string):Promise<void>;
 
-export function QueryPasswords():Promise<Array<main.PasswordEntryVO>>;
+export function QueryPasswords():Promise<Array<main.EntryVO>>;
 
 export function Register(arg1:string,arg2:string):Promise<void>;
 
-export function SavePassword(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function SavePassword(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
-export function SearchPassword(arg1:string):Promise<Array<main.PasswordEntryVO>>;
+export function SearchPassword(arg1:string):Promise<Array<main.EntryVO>>;
 
 export function SetupMasterPassword(arg1:string):Promise<void>;
 
+export function ToggleFavorite(arg1:number):Promise<void>;
+
 export function Unlock(arg1:string):Promise<void>;
 
-export function UpdatePassword(arg1:number,arg2:string,arg3:string,arg4:string):Promise<void>;
+export function UpdatePassword(arg1:number,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<void>;

@@ -34,8 +34,8 @@ export function Register(arg1, arg2) {
   return window['go']['main']['App']['Register'](arg1, arg2);
 }
 
-export function SavePassword(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SavePassword'](arg1, arg2, arg3);
+export function SavePassword(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SavePassword'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SearchPassword(arg1) {
@@ -46,10 +46,14 @@ export function SetupMasterPassword(arg1) {
   return window['go']['main']['App']['SetupMasterPassword'](arg1);
 }
 
+export function ToggleFavorite(arg1) {
+  return window['go']['main']['App']['ToggleFavorite'](arg1);
+}
+
 export function Unlock(arg1) {
   return window['go']['main']['App']['Unlock'](arg1);
 }
 
-export function UpdatePassword(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['UpdatePassword'](arg1, arg2, arg3, arg4);
+export function UpdatePassword(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UpdatePassword'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

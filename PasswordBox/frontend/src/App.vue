@@ -1,110 +1,137 @@
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import 'element-plus/dist/index.css'
-import { Register, Login, SavePassword, QueryPasswords, DeletePassword, UpdatePassword, SearchPassword } from '../wailsjs/go/main/App'
-// 密码显示控制
-const showPwdMap = ref({}) // id: true/false
-// 复制密码到剪贴板并10秒后清空
-const copyPassword = async (pwd) => {
-  try {
-    await navigator.clipboard.writeText(pwd)
-    ElMessage.success('密码已复制到剪贴板，10秒后自动清除')
-    setTimeout(async () => {
-      const current = await navigator.clipboard.readText()
-      if (current === pwd) {
-        await navigator.clipboard.writeText('')
-      }
-    }, 10000)
-  } catch (e) {
-    ElMessage.error('复制失败：' + (e.message || String(e)))
-  }
-}
-// 切换显示/隐藏
-const toggleShowPwd = (id) => {
-  showPwdMap.value[id] = !showPwdMap.value[id]
-}
+import {
+  CheckInitialized,
+  SetupMasterPassword,
+  Unlock,
+  Lock,
+  SavePassword,
+  QueryPasswords,
+  DeletePassword,
+  UpdatePassword,
+  SearchPassword,
+  ToggleFavorite,
+  GetPasswordStrength
+} from '../wailsjs/go/main/App'
 
-const mode = ref('login')
-const loginForm = reactive({ username: '', password: '' })
-const registerForm = reactive({ username: '', password: '' })
-const saveForm = reactive({ site: '', account: '', password: '' })
-const passwords = ref([]) // 全部密码
+// ========== 状态 ==========
+const mode = ref('loading') // loading | setup | unlock | main
+const initialized = ref(false)
+
+// ========== 解锁/初始化表单 ==========
+const setupForm = reactive({ password: '', confirm: '' })
+const unlockForm = reactive({ password: '' })
+const passwordStrength = reactive({ score: 0, level: '', suggestions: [] })
+
+// ========== 密码保存表单 ==========
+const saveForm = reactive({ title: '', url: '', username: '', password: '', note: '' })
+
+// ========== 密码列表 ==========
+const passwords = ref([])
 const searchKeyword = ref('')
 const searchLoading = ref(false)
-const searchResults = ref([]) // 搜索结果
+const searchResults = ref([])
+
+// ========== 编辑弹窗 ==========
 const editDialogVisible = ref(false)
-const editForm = reactive({ id: null, site: '', account: '', password: '' })
+const editForm = reactive({ id: null, title: '', url: '', username: '', password: '', note: '' })
 const editLoading = ref(false)
-// 打开编辑弹窗
-const openEdit = (row, idx) => {
-  editForm.id = row.id || idx // 若后端返回有id字段则用id，否则用索引
-  editForm.site = row.site
-  editForm.account = row.account
-  editForm.password = row.password
-  editDialogVisible.value = true
-}
 
-// 提交编辑
-const handleEdit = async () => {
-  editLoading.value = true
+// ========== 密码显示控制 ==========
+const showPwdMap = ref({})
+
+// ========== 初始化检查 ==========
+onMounted(async () => {
   try {
-    await UpdatePassword(editForm.id, editForm.site, editForm.account, editForm.password)
-    ElMessage.success('更新成功！')
-    editDialogVisible.value = false
-    await fetchPasswords()
+    initialized.value = await CheckInitialized()
+    mode.value = initialized.value ? 'unlock' : 'setup'
   } catch (e) {
-    ElMessage.error(e.message || String(e))
-  } finally {
-    editLoading.value = false
+    ElMessage.error('初始化检查失败：' + (e.message || String(e)))
+    mode.value = 'setup'
   }
-}
+})
 
-// 删除密码
-const handleDelete = async (row, idx) => {
-  const id = row.id || idx
-  ElMessageBox.confirm('确定要删除该密码吗？', '提示', { type: 'warning' })
-    .then(async () => {
-      await DeletePassword(id)
-      ElMessage.success('删除成功！')
-      await fetchPasswords()
-    })
-    .catch(() => {})
-}
-
-const handleRegister = async () => {
-  try {
-    await Register(registerForm.username, registerForm.password)
-    ElMessage.success('注册成功，请登录！')
-    mode.value = 'login'
-  } catch (e) {
-    ElMessage.error(e.message || String(e))
+// ========== 密码强度检查 ==========
+const checkStrength = async (pwd) => {
+  if (!pwd) {
+    passwordStrength.score = 0
+    passwordStrength.level = ''
+    passwordStrength.suggestions = []
+    return
   }
+  const result = await GetPasswordStrength(pwd)
+  passwordStrength.score = result.score
+  passwordStrength.level = result.level
+  passwordStrength.suggestions = result.suggestions
 }
 
-const handleLogin = async () => {
+// ========== 初始化主密码 ==========
+const handleSetup = async () => {
+  if (!setupForm.password) {
+    ElMessage.warning('请输入主密码')
+    return
+  }
+  if (setupForm.password !== setupForm.confirm) {
+    ElMessage.warning('两次输入的密码不一致')
+    return
+  }
   try {
-    await Login(loginForm.username, loginForm.password)
+    await SetupMasterPassword(setupForm.password)
+    ElMessage.success('初始化成功！')
+    initialized.value = true
     mode.value = 'main'
     await fetchPasswords()
-    ElMessage.success('登录成功！')
   } catch (e) {
     ElMessage.error(e.message || String(e))
   }
 }
 
-const handleSave = async () => {
+// ========== 解锁 ==========
+const handleUnlock = async () => {
+  if (!unlockForm.password) {
+    ElMessage.warning('请输入主密码')
+    return
+  }
   try {
-    await SavePassword(saveForm.site, saveForm.account, saveForm.password)
-    ElMessage.success('保存成功！')
-    saveForm.site = saveForm.account = saveForm.password = ''
+    await Unlock(unlockForm.password)
+    ElMessage.success('解锁成功！')
+    mode.value = 'main'
     await fetchPasswords()
   } catch (e) {
     ElMessage.error(e.message || String(e))
   }
 }
 
+// ========== 锁定 ==========
+const handleLock = async () => {
+  Lock()
+  mode.value = 'unlock'
+  unlockForm.password = ''
+  passwords.value = []
+  searchResults.value = []
+  searchKeyword.value = ''
+  ElMessage.info('已锁定')
+}
 
+// ========== 保存密码 ==========
+const handleSave = async () => {
+  if (!saveForm.title || !saveForm.password) {
+    ElMessage.warning('标题和密码不能为空')
+    return
+  }
+  try {
+    await SavePassword(saveForm.title, saveForm.url, saveForm.username, saveForm.password, saveForm.note)
+    ElMessage.success('保存成功！')
+    saveForm.title = saveForm.url = saveForm.username = saveForm.password = saveForm.note = ''
+    await fetchPasswords()
+  } catch (e) {
+    ElMessage.error(e.message || String(e))
+  }
+}
+
+// ========== 获取全部密码 ==========
 const fetchPasswords = async () => {
   try {
     passwords.value = await QueryPasswords()
@@ -113,7 +140,7 @@ const fetchPasswords = async () => {
   }
 }
 
-// 搜索框输入时触发
+// ========== 搜索 ==========
 const handleSearch = async () => {
   if (searchKeyword.value && searchKeyword.value.trim() !== '') {
     searchLoading.value = true
@@ -128,93 +155,160 @@ const handleSearch = async () => {
   }
 }
 
-// 搜索框输入时触发（已合并到新版 handleSearch，避免重复声明）
+// ========== 编辑 ==========
+const openEdit = (row) => {
+  editForm.id = row.id
+  editForm.title = row.title
+  editForm.url = row.url
+  editForm.username = row.username
+  editForm.password = row.password
+  editForm.note = row.note
+  editDialogVisible.value = true
+}
 
-const logout = () => {
-  mode.value = 'login'
-  loginForm.username = loginForm.password = ''
-  passwords.value = []
-  ElMessage.info('已退出登录')
+const handleEdit = async () => {
+  editLoading.value = true
+  try {
+    await UpdatePassword(editForm.id, editForm.title, editForm.url, editForm.username, editForm.password, editForm.note)
+    ElMessage.success('更新成功！')
+    editDialogVisible.value = false
+    await fetchPasswords()
+    if (searchKeyword.value.trim()) await handleSearch()
+  } catch (e) {
+    ElMessage.error(e.message || String(e))
+  } finally {
+    editLoading.value = false
+  }
+}
+
+// ========== 删除 ==========
+const handleDelete = async (row) => {
+  ElMessageBox.confirm('确定要删除该密码吗？', '提示', { type: 'warning' })
+    .then(async () => {
+      await DeletePassword(row.id)
+      ElMessage.success('删除成功！')
+      await fetchPasswords()
+      if (searchKeyword.value.trim()) await handleSearch()
+    })
+    .catch(() => {})
+}
+
+// ========== 收藏 ==========
+const handleToggleFavorite = async (row) => {
+  try {
+    await ToggleFavorite(row.id)
+    await fetchPasswords()
+    if (searchKeyword.value.trim()) await handleSearch()
+  } catch (e) {
+    ElMessage.error(e.message || String(e))
+  }
+}
+
+// ========== 复制密码 ==========
+const copyPassword = async (pwd) => {
+  try {
+    await navigator.clipboard.writeText(pwd)
+    ElMessage.success('密码已复制到剪贴板，10秒后自动清除')
+    setTimeout(async () => {
+      const current = await navigator.clipboard.readText()
+      if (current === pwd) {
+        await navigator.clipboard.writeText('')
+      }
+    }, 10000)
+  } catch (e) {
+    ElMessage.error('复制失败：' + (e.message || String(e)))
+  }
+}
+
+// ========== 切换显示/隐藏 ==========
+const toggleShowPwd = (id) => {
+  showPwdMap.value[id] = !showPwdMap.value[id]
 }
 </script>
-
 
 <template>
   <div class="container">
     <div class="main-gui">
-      <el-card v-if="mode==='login'" class="box-card">
-        <template #header><span>登录</span></template>
-        <el-form :model="loginForm" label-width="60px">
-          <el-form-item label="用户名">
-            <el-input v-model="loginForm.username" placeholder="用户名" clearable />
-          </el-form-item>
-          <el-form-item label="密码">
-            <el-input v-model="loginForm.password" type="password" placeholder="密码" show-password clearable />
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary" @click="handleLogin" style="width:100%">登录</el-button>
-          </el-form-item>
-          <el-form-item>
-            <span>没有账号？<el-link type="primary" @click="mode='register'">注册</el-link></span>
-          </el-form-item>
-        </el-form>
+      <!-- 加载中 -->
+      <el-card v-if="mode==='loading'" class="box-card center">
+        <el-icon class="is-loading"><Loading /></el-icon>
+        <div style="margin-top:12px;">加载中...</div>
       </el-card>
-      <el-card v-else-if="mode==='register'" class="box-card">
-        <template #header><span>注册</span></template>
-        <el-form :model="registerForm" label-width="60px">
-          <el-form-item label="用户名">
-            <el-input v-model="registerForm.username" placeholder="用户名" clearable />
-          </el-form-item>
-          <el-form-item label="密码">
-            <el-input v-model="registerForm.password" type="password" placeholder="密码" show-password clearable />
+
+      <!-- 初始化主密码 -->
+      <el-card v-else-if="mode==='setup'" class="box-card">
+        <template #header><span>首次使用 - 设置主密码</span></template>
+        <el-form :model="setupForm" label-width="80px">
+          <el-form-item label="主密码">
+            <el-input
+              v-model="setupForm.password"
+              type="password"
+              placeholder="设置主密码"
+              show-password
+              clearable
+              @input="checkStrength(setupForm.password)"
+            />
           </el-form-item>
           <el-form-item>
-            <el-button type="primary" @click="handleRegister" style="width:100%">注册</el-button>
+            <div style="color:#666;font-size:13px;">
+              强度: <span :style="{color: passwordStrength.level==='强'?'#67C23A':passwordStrength.level==='中'?'#E6A23C':'#F56C6C'}">{{ passwordStrength.level || '-' }}</span>
+              <span v-if="passwordStrength.suggestions.length" style="margin-left:8px;color:#909399;">({{ passwordStrength.suggestions.join('；') }})</span>
+            </div>
+          </el-form-item>
+          <el-form-item label="确认密码">
+            <el-input v-model="setupForm.confirm" type="password" placeholder="再次输入主密码" show-password clearable />
           </el-form-item>
           <el-form-item>
-            <span>已有账号？<el-link type="primary" @click="mode='login'">登录</el-link></span>
+            <el-button type="primary" @click="handleSetup" style="width:100%">初始化</el-button>
           </el-form-item>
         </el-form>
       </el-card>
 
+      <!-- 解锁 -->
+      <el-card v-else-if="mode==='unlock'" class="box-card">
+        <template #header><span>解锁 PasswordBox</span></template>
+        <el-form :model="unlockForm" label-width="80px">
+          <el-form-item label="主密码">
+            <el-input v-model="unlockForm.password" type="password" placeholder="请输入主密码" show-password clearable @keyup.enter="handleUnlock" />
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="handleUnlock" style="width:100%">解锁</el-button>
+          </el-form-item>
+        </el-form>
+      </el-card>
+
+      <!-- 主界面 -->
       <el-card v-else class="box-card">
         <template #header>
           <span>密码管理</span>
-          <el-button type="danger" size="small" style="float:right;" @click="logout">退出</el-button>
+          <el-button type="danger" size="small" style="float:right;" @click="handleLock">锁定</el-button>
         </template>
         <div style="display: flex; flex-direction: column; gap: 24px;">
-          <!-- 上半部分：搜索及结果 -->
+          <!-- 搜索 -->
           <div style="background: #f8fafd; border-radius: 8px; padding: 18px 18px 12px 18px; box-shadow: 0 1px 4px #e6e6e6;">
             <div style="margin-bottom: 18px; display: flex; align-items: center; gap: 12px;">
               <el-input
                 v-model="searchKeyword"
-                placeholder="请输入账号关键字搜索"
+                placeholder="搜索标题、用户名或网址"
                 clearable
                 style="max-width: 320px;"
                 @input="handleSearch"
                 @clear="handleSearch"
                 :disabled="searchLoading"
-              >
-                <template #prefix>
-                  <i class="el-icon-search" />
-                </template>
-              </el-input>
+              />
               <el-button :loading="searchLoading" @click="handleSearch" type="primary">搜索</el-button>
             </div>
             <div v-if="searchKeyword && searchKeyword.trim() !== ''" style="margin-bottom: 10px; color: #409EFF; font-size: 15px;">
-              <span>搜索“{{ searchKeyword }}”的结果，共 {{ searchResults.length }} 条</span>
+              <span>搜索"{{ searchKeyword }}"的结果，共 {{ searchResults.length }} 条</span>
             </div>
             <el-table v-if="searchKeyword && searchKeyword.trim() !== ''" :data="searchResults" style="width: 100%;">
-              <el-table-column prop="site" label="网站/应用" />
-              <el-table-column prop="account" label="账号" />
+              <el-table-column prop="title" label="标题" />
+              <el-table-column prop="url" label="网址" />
+              <el-table-column prop="username" label="用户名" />
               <el-table-column prop="password" label="密码">
                 <template #default="scope">
-                  <span v-if="!showPwdMap[scope.row.id]">
-                    {{ '********' }}
-                  </span>
-                  <span v-else>
-                    {{ scope.row.password }}
-                  </span>
+                  <span v-if="!showPwdMap[scope.row.id]">********</span>
+                  <span v-else>{{ scope.row.password }}</span>
                   <el-button size="small" style="margin-left:8px;" @click="toggleShowPwd(scope.row.id)">
                     <span v-if="!showPwdMap[scope.row.id]">显示</span>
                     <span v-else>隐藏</span>
@@ -222,47 +316,63 @@ const logout = () => {
                   <el-button size="small" type="primary" style="margin-left:8px;" @click="copyPassword(scope.row.password)">复制</el-button>
                 </template>
               </el-table-column>
+              <el-table-column label="操作" width="180">
+                <template #default="scope">
+                  <el-button size="small" @click="openEdit(scope.row)">编辑</el-button>
+                  <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
+                </template>
+              </el-table-column>
             </el-table>
           </div>
-          <!-- 下半部分：密码保存和全部管理 -->
+
+          <!-- 保存密码 -->
           <div style="background: #fff; border-radius: 8px; padding: 18px 18px 12px 18px; box-shadow: 0 1px 4px #e6e6e6;">
             <el-form :model="saveForm" label-width="80px" class="save-form-vertical">
               <el-row :gutter="12">
-                <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="6">
-                  <el-form-item label="网站/应用">
-                    <el-input v-model="saveForm.site" placeholder="网站/应用" clearable />
+                <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                  <el-form-item label="标题">
+                    <el-input v-model="saveForm.title" placeholder="如 GitHub" clearable />
                   </el-form-item>
                 </el-col>
-                <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="6">
-                  <el-form-item label="账号">
-                    <el-input v-model="saveForm.account" placeholder="账号" clearable />
+                <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                  <el-form-item label="网址">
+                    <el-input v-model="saveForm.url" placeholder="如 https://github.com" clearable />
                   </el-form-item>
                 </el-col>
-                <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="6">
+                <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                  <el-form-item label="用户名">
+                    <el-input v-model="saveForm.username" placeholder="用户名/邮箱" clearable />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12" :md="8" :lg="6">
                   <el-form-item label="密码">
                     <el-input v-model="saveForm.password" placeholder="密码" show-password clearable />
                   </el-form-item>
                 </el-col>
-                <el-col :xs="24" :sm="24" :md="24" :lg="6" :xl="6">
+                <el-col :xs="24" :sm="24" :md="16" :lg="12">
+                  <el-form-item label="备注">
+                    <el-input v-model="saveForm.note" placeholder="备注信息" clearable />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="24" :md="8" :lg="6">
                   <el-form-item label-width="0">
                     <el-button type="primary" @click="handleSave" style="width:100%">保存</el-button>
                   </el-form-item>
                 </el-col>
               </el-row>
             </el-form>
+
+            <!-- 全部密码 -->
             <div style="margin-top: 20px;">
               <div style="font-size: 15px; color: #222; margin-bottom: 8px;">全部密码</div>
               <el-table :data="passwords" style="width: 100%;">
-                <el-table-column prop="site" label="网站/应用" />
-                <el-table-column prop="account" label="账号" />
+                <el-table-column prop="title" label="标题" />
+                <el-table-column prop="url" label="网址" />
+                <el-table-column prop="username" label="用户名" />
                 <el-table-column prop="password" label="密码">
                   <template #default="scope">
-                    <span v-if="!showPwdMap[scope.row.id]">
-                      {{ '********' }}
-                    </span>
-                    <span v-else>
-                      {{ scope.row.password }}
-                    </span>
+                    <span v-if="!showPwdMap[scope.row.id]">********</span>
+                    <span v-else>{{ scope.row.password }}</span>
                     <el-button size="small" style="margin-left:8px;" @click="toggleShowPwd(scope.row.id)">
                       <span v-if="!showPwdMap[scope.row.id]">显示</span>
                       <span v-else>隐藏</span>
@@ -270,24 +380,34 @@ const logout = () => {
                     <el-button size="small" type="primary" style="margin-left:8px;" @click="copyPassword(scope.row.password)">复制</el-button>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="140">
+                <el-table-column label="操作" width="220">
                   <template #default="scope">
-                    <el-button size="small" @click="openEdit(scope.row, scope.$index)">编辑</el-button>
-                    <el-button size="small" type="danger" @click="handleDelete(scope.row, scope.$index)">删除</el-button>
+                    <el-button size="small" @click="openEdit(scope.row)">编辑</el-button>
+                    <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
+                    <el-button size="small" :type="scope.row.isFavorite ? 'warning' : 'default'" @click="handleToggleFavorite(scope.row)">
+                      {{ scope.row.isFavorite ? '取消收藏' : '收藏' }}
+                    </el-button>
                   </template>
                 </el-table-column>
               </el-table>
             </div>
-            <el-dialog v-model="editDialogVisible" title="编辑密码" width="350px">
+
+            <el-dialog v-model="editDialogVisible" title="编辑密码" width="450px">
               <el-form :model="editForm" label-width="80px">
-                <el-form-item label="网站/应用">
-                  <el-input v-model="editForm.site" />
+                <el-form-item label="标题">
+                  <el-input v-model="editForm.title" />
                 </el-form-item>
-                <el-form-item label="账号">
-                  <el-input v-model="editForm.account" />
+                <el-form-item label="网址">
+                  <el-input v-model="editForm.url" />
+                </el-form-item>
+                <el-form-item label="用户名">
+                  <el-input v-model="editForm.username" />
                 </el-form-item>
                 <el-form-item label="密码">
                   <el-input v-model="editForm.password" />
+                </el-form-item>
+                <el-form-item label="备注">
+                  <el-input v-model="editForm.note" />
                 </el-form-item>
               </el-form>
               <template #footer>
@@ -301,7 +421,6 @@ const logout = () => {
     </div>
   </div>
 </template>
-
 
 <style>
 .container {
@@ -336,8 +455,9 @@ const logout = () => {
   width: 100%;
   box-sizing: border-box;
 }
-.box-card {
-  margin-top: 24px;
+.center {
+  text-align: center;
+  padding: 40px;
 }
 .save-form-vertical {
   width: 100%;
