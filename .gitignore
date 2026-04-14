@@ -1,0 +1,5 @@
+PasswordBox/PasswordBox.ini
+PasswordBox/Box.db
+*.md
+.claude
+PasswordBox/build

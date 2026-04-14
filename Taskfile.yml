@@ -1,0 +1,253 @@
+# Taskfile.yml - PasswordBox 项目管理
+# 安装 Task: go install github.com/go-task/task/v3/cmd/task@latest
+# 使用: task <命令>
+
+version: '3'
+
+vars:
+  APP_NAME: PasswordBox
+  BUILD_DIR: build/bin
+  FRONTEND_DIR: PasswordBox/frontend
+  GO_MODULE: PasswordBox
+  WAILS_DIR: PasswordBox  # wails.json 所在目录
+
+tasks:
+  default:
+    desc: 显示可用任务
+    cmds:
+      - task --list
+
+  # ========== 开发任务 ==========
+  dev:
+    desc: 启动开发服务器（带热重载）
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - wails dev
+
+  dev:frontend:
+    desc: 仅启动前端开发服务器
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm run dev
+
+  # ========== 构建任务 ==========
+  build:
+    desc: 构建当前平台的生产版本
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - wails build -clean
+
+  build:windows:
+    desc: 构建 Windows 版本
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - wails build -clean -platform windows/amd64
+
+  build:linux:
+    desc: 构建 Linux 版本
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - wails build -clean -platform linux/amd64
+
+  build:mac:
+    desc: 构建 macOS 版本（Intel + Apple Silicon）
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - wails build -clean -platform darwin/universal
+
+  build:all:
+    desc: 构建所有平台版本
+    cmds:
+      - task: build:windows
+      - task: build:linux
+      - task: build:mac
+
+  # ========== 代码质量 ==========
+  lint:
+    desc: 运行所有代码检查
+    cmds:
+      - task: lint:go
+      - task: lint:frontend
+
+  lint:go:
+    desc: Go 代码检查（需要安装 golangci-lint）
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - golangci-lint run ./...
+    ignore_error: true
+
+  lint:frontend:
+    desc: 前端代码检查
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm run lint
+    ignore_error: true
+
+  fmt:
+    desc: 格式化所有代码
+    cmds:
+      - task: fmt:go
+      - task: fmt:frontend
+
+  fmt:go:
+    desc: 格式化 Go 代码
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - gofmt -w .
+      - goimports -w .
+    ignore_error: true
+
+  fmt:frontend:
+    desc: 格式化前端代码
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm run format
+    ignore_error: true
+
+  vet:
+    desc: Go 静态分析
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - go vet ./...
+
+  # ========== 安全扫描 ==========
+  security:
+    desc: 运行安全扫描
+    cmds:
+      - task: security:go
+      - task: security:frontend
+
+  security:go:
+    desc: Go 安全扫描（需要安装 gosec）
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - gosec ./...
+    ignore_error: true
+
+  security:frontend:
+    desc: 前端安全审计
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm audit
+    ignore_error: true
+
+  # ========== 测试 ==========
+  test:
+    desc: 运行所有测试
+    cmds:
+      - task: test:go
+      - task: test:frontend
+
+  test:go:
+    desc: Go 单元测试
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - go test -v ./...
+    ignore_error: true
+
+  test:go:coverage:
+    desc: Go 测试覆盖率
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+    ignore_error: true
+
+  test:frontend:
+    desc: 前端测试
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm run test
+    ignore_error: true
+
+  # ========== 依赖管理 ==========
+  deps:install:
+    desc: 安装所有依赖
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - go mod download
+      - task: deps:frontend
+
+  deps:frontend:
+    desc: 安装前端依赖
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm install
+
+  deps:update:
+    desc: 更新依赖
+    cmds:
+      - go get -u ./...
+      - go mod tidy
+      - task: deps:update:frontend
+
+  deps:update:frontend:
+    desc: 更新前端依赖
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm update
+
+  deps:tidy:
+    desc: 清理 Go 依赖
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - go mod tidy
+      - go mod verify
+
+  # ========== 数据库 ==========
+  db:clean:
+    desc: 清理本地数据库
+    cmds:
+      - rm -f PasswordBox/Box.db
+      - echo "数据库已清理"
+
+  # ========== 清理 ==========
+  clean:
+    desc: 清理所有构建产物
+    cmds:
+      - rm -rf {{.BUILD_DIR}}
+      - rm -rf {{.FRONTEND_DIR}}/dist
+      - rm -f coverage.out coverage.html
+      - go clean -cache
+      - echo "清理完成"
+
+  clean:all:
+    desc: 深度清理（包括依赖）
+    cmds:
+      - task: clean
+      - rm -rf {{.FRONTEND_DIR}}/node_modules
+      - cd {{.WAILS_DIR}} && go clean -modcache
+      - echo "深度清理完成"
+
+  # ========== 发布 ==========
+  release:
+    desc: 发布流程（检查 -> 测试 -> 构建）
+    deps: [lint, test]
+    cmds:
+      - task: build:all
+      - echo "构建完成，检查 build/bin 目录"
+
+  release:check:
+    desc: 发布前检查
+    cmds:
+      - task: lint
+      - task: security
+      - task: test
+      - echo "检查通过，可以发布"
+
+  # ========== Wails 相关 ==========
+  wails:init:
+    desc: 初始化 Wails 项目（首次使用）
+    cmds:
+      - wails init -n {{.APP_NAME}} -t vue-ts
+
+  wails:doctor:
+    desc: 检查 Wails 环境
+    dir: "{{.WAILS_DIR}}"
+    cmds:
+      - wails doctor
+
+  wails:update:
+    desc: 更新 Wails CLI
+    cmds:
+      - go install github.com/wailsapp/wails/v2/cmd/wails@latest
