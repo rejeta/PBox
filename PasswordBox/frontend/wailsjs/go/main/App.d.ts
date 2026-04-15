@@ -5,6 +5,8 @@ import {main} from '../models';
 
 export function CheckInitialized():Promise<boolean>;
 
+export function Close():Promise<void>;
+
 export function DeletePassword(arg1:number):Promise<void>;
 
 export function GetPasswordCounts():Promise<Record<string, number>>;

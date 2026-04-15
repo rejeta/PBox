@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,31 +47,37 @@ type AppIni struct {
 	DbPath string `ini:"db_path"`
 }
 
-// NewApp creates a new App application struct
+// NewApp creates a new App application struct (default paths)
 func NewApp() *App {
-	workDir := "."
+	return NewAppWithPath(".", "Box.db")
+}
 
-	// 检查并创建数据库目录
-	dbPath := "Box.db"
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		file, err := os.Create(dbPath)
+// NewAppWithPath creates a new App with configurable paths (for testing)
+func NewAppWithPath(workDir, dbPath string) *App {
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		log.Error("创建工作目录失败: " + err.Error())
+		return nil
+	}
+
+	fullDbPath := filepath.Join(workDir, dbPath)
+	if _, err := os.Stat(fullDbPath); os.IsNotExist(err) {
+		file, err := os.Create(fullDbPath)
 		if err != nil {
-			fmt.Println("创建数据库文件失败: " + err.Error())
+			log.Error("创建数据库文件失败: " + err.Error())
 			return nil
 		}
 		file.Close()
 	}
 
-	fmt.Println("连接数据库: " + dbPath)
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	log.Info("连接数据库: %s", fullDbPath)
+	db, err := gorm.Open(sqlite.Open(fullDbPath), &gorm.Config{})
 	if err != nil {
-		fmt.Println("数据库连接失败: " + err.Error())
+		log.Error("数据库连接失败: " + err.Error())
 		return nil
 	}
 
-	// 自动迁移表结构
 	if err := db.AutoMigrate(&PasswordEntry{}); err != nil {
-		fmt.Println("数据库迁移失败: " + err.Error())
+		log.Error("数据库迁移失败: " + err.Error())
 		return nil
 	}
 
@@ -87,6 +93,28 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	log.Info("应用启动完成")
+}
+
+// shutdown is called when the app exits
+func (a *App) shutdown(ctx context.Context) {
+	log.Info("应用正在关闭")
+	a.Close()
+	log.Close()
+}
+
+// domReady is called when the frontend has loaded
+func (a *App) domReady(ctx context.Context) {
+	log.Info("前端界面加载完成")
+}
+
+// Close 关闭数据库连接
+func (a *App) Close() error {
+	sqlDB, err := a.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
 }
 
 // AES加密
@@ -104,29 +132,6 @@ func (a *App) encrypt(plain string) (string, error) {
 	stream := cipher.NewCFBEncrypter(block, iv)
 	stream.XORKeyStream(ciphertext[aes.BlockSize:], b)
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-// sha256 摘要
-func (a *App) hashSHA256(data string) (string, error) {
-	hasher := sha256.New()
-	_, err := hasher.Write([]byte(data))
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(hasher.Sum(nil)), nil
-}
-
-// 密码校验
-func (a *App) verifyPassword(plain, hash string) (bool, error) {
-	// 解base64编码
-	if len(hash) == 0 {
-		return false, errors.New("hash不能为空")
-	}
-	hashed, err := a.hashSHA256(plain)
-	if err != nil {
-		return false, err
-	}
-	return hashed == hash, nil
 }
 
 // AES解密
@@ -193,7 +198,11 @@ func (a *App) SavePassword(title, url, username, password, note string) error {
 		Password: encPassword,
 		Note:     encNote,
 	}
-	return a.db.Create(&entry).Error
+	if err := a.db.Create(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("保存密码条目 [id=%d]", entry.ID)
+	return nil
 }
 
 // 前端展示用结构体
@@ -285,6 +294,7 @@ func (a *App) QueryPasswords(filter, sortBy string) ([]EntryVO, error) {
 			IsFavorite: e.IsFavorite,
 		})
 	}
+	log.Debug("查询密码条目数: %d (filter=%s, sortBy=%s)", len(result), filter, sortBy)
 	return result, nil
 }
 
@@ -299,7 +309,11 @@ func (a *App) DeletePassword(id uint) error {
 	if err := a.db.Where("id = ?", id).First(&entry).Error; err != nil {
 		return errors.New("密码不存在")
 	}
-	return a.db.Delete(&entry).Error
+	if err := a.db.Delete(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("删除密码条目 [id=%d]", id)
+	return nil
 }
 
 // 修改密码
@@ -338,7 +352,11 @@ func (a *App) UpdatePassword(id uint, title, url, username, password, note strin
 	entry.Username = encUsername
 	entry.Password = encPassword
 	entry.Note = encNote
-	return a.db.Save(&entry).Error
+	if err := a.db.Save(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("更新密码条目 [id=%d]", id)
+	return nil
 }
 
 // 搜索指定密码
@@ -414,6 +432,7 @@ func (a *App) SearchPassword(keyword string) ([]EntryVO, error) {
 	case err := <-errCh:
 		return nil, err
 	case result := <-resultCh:
+		log.Debug("搜索关键词: %s, 结果数: %d", keyword, len(result))
 		return result, nil
 	case <-time.After(10 * time.Second):
 		return nil, errors.New("搜索超时，请重试")
@@ -456,6 +475,7 @@ func (a *App) SetupMasterPassword(password string) error {
 
 	a.aesKey = keyConfig.DerivedKey
 	a.isUnlocked = true
+	log.Info("主密码初始化成功")
 	return nil
 }
 
@@ -482,6 +502,7 @@ func (a *App) Unlock(password string) error {
 
 	a.aesKey = keyConfig.DerivedKey
 	a.isUnlocked = true
+	log.Info("应用已解锁")
 	return nil
 }
 
@@ -498,6 +519,7 @@ func (a *App) Lock() {
 	defer a.mu.Unlock()
 	a.aesKey = nil
 	a.isUnlocked = false
+	log.Info("应用已锁定")
 }
 
 // GetPasswordStrength 获取密码强度（供前端调用）
@@ -524,7 +546,7 @@ func (a *App) GetPasswordCounts() (map[string]int64, error) {
 	// 最近添加（取最新的10条作为最近）
 	a.db.Model(&PasswordEntry{}).Where("id > (SELECT MAX(id) - 10 FROM password_entries)").Count(&c)
 	counts["recent"] = c
-
+	log.Debug("查询密码统计: %+v", counts)
 	return counts, nil
 }
 
@@ -540,5 +562,9 @@ func (a *App) ToggleFavorite(id uint) error {
 		return errors.New("密码条目不存在")
 	}
 	entry.IsFavorite = !entry.IsFavorite
-	return a.db.Save(&entry).Error
+	if err := a.db.Save(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("切换收藏状态 [id=%d, favorite=%v]", id, entry.IsFavorite)
+	return nil
 }

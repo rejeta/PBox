@@ -6,6 +6,10 @@ export function CheckInitialized() {
   return window['go']['main']['App']['CheckInitialized']();
 }
 
+export function Close() {
+  return window['go']['main']['App']['Close']();
+}
+
 export function DeletePassword(arg1) {
   return window['go']['main']['App']['DeletePassword'](arg1);
 }

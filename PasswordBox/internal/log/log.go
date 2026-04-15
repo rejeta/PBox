@@ -14,11 +14,13 @@ var (
 	logFile *os.File
 )
 
-// Init 初始化日志
+// Init 初始化日志（默认写入当前目录 passwordbox.log）
 func Init() error {
-	// 日志文件路径
-	logPath := filepath.Join(".", "passwordbox.log")
+	return InitWithPath(filepath.Join(".", "passwordbox.log"))
+}
 
+// InitWithPath 使用指定路径初始化日志
+func InitWithPath(logPath string) error {
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		// 如果无法创建文件，使用标准错误输出

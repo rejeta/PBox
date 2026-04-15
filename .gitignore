@@ -8,3 +8,5 @@ test
 *.bat
 *.sh
 *_test.go
+*.log
+*.exe
