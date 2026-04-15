@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.24.4
 
 require (
+	fyne.io/systray v1.12.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/wailsapp/wails/v2 v2.10.1
 	golang.org/x/crypto v0.33.0

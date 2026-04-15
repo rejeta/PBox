@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"embed"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -15,7 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"fyne.io/systray"
 	"github.com/glebarez/sqlite"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"gorm.io/gorm"
 
 	"PasswordBox/internal/config"
@@ -46,6 +49,9 @@ type App struct {
 type AppIni struct {
 	DbPath string `ini:"db_path"`
 }
+
+//go:embed frontend/assets/tray.ico
+var trayIcon embed.FS
 
 // NewApp creates a new App application struct (default paths)
 func NewApp() *App {
@@ -94,6 +100,7 @@ func NewAppWithPath(workDir, dbPath string) *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	log.Info("应用启动完成")
+	go a.setupSystray()
 }
 
 // shutdown is called when the app exits
@@ -106,6 +113,43 @@ func (a *App) shutdown(ctx context.Context) {
 // domReady is called when the frontend has loaded
 func (a *App) domReady(ctx context.Context) {
 	log.Info("前端界面加载完成")
+}
+
+func (a *App) setupSystray() {
+	systray.Run(a.onSystrayReady, a.onSystrayExit)
+}
+
+func (a *App) onSystrayReady() {
+	iconBytes, _ := trayIcon.ReadFile("frontend/assets/tray.ico")
+	systray.SetIcon(iconBytes)
+	systray.SetTitle("PasswordBox")
+	systray.SetTooltip("PasswordBox 密码管理器")
+
+	mShow := systray.AddMenuItem("显示", "显示主窗口")
+	mQuit := systray.AddMenuItem("退出", "完全退出应用")
+
+	systray.SetOnTapped(func() {
+		runtime.Show(a.ctx)
+	})
+
+	go func() {
+		for {
+			select {
+			case <-mShow.ClickedCh:
+				runtime.Show(a.ctx)
+			case <-mQuit.ClickedCh:
+				go func() {
+					systray.Quit()
+					runtime.Quit(a.ctx)
+				}()
+				return
+			}
+		}
+	}()
+}
+
+func (a *App) onSystrayExit() {
+	log.Info("托盘已退出")
 }
 
 // Close 关闭数据库连接

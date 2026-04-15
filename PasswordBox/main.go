@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 
 	"PasswordBox/internal/log"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed all:frontend/dist
@@ -36,6 +38,10 @@ func main() {
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
 		OnDomReady:       app.domReady,
+		OnBeforeClose: func(ctx context.Context) bool {
+			runtime.Hide(ctx)
+			return true
+		},
 		Bind: []interface{}{
 			app,
 		},
