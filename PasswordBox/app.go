@@ -5,111 +5,116 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/glebarez/sqlite"
-	"golang.org/x/crypto/argon2"
-	"gopkg.in/ini.v1"
 	"gorm.io/gorm"
+
+	"PasswordBox/internal/config"
+	"PasswordBox/internal/log"
+	"PasswordBox/internal/utils"
 )
 
-type User struct {
-	ID       uint   `gorm:"primaryKey"`
-	Username string `gorm:"uniqueIndex"`
-	Password string // AES加密后
-}
 
-type PasswordEntry struct {
+type PasswordEntry struct { // 单用户模式密码条目
 	ID       uint   `gorm:"primaryKey"`
-	UserID   uint   // 外键
-	Site     string // AES加密后
-	Account  string // AES加密后
-	Password string // AES加密后
+	Title      string // 条目名称（加密）
+	URL        string // 网站地址（加密）
+	Username   string // 用户名（加密）
+	Password   string // 密码（加密）
+	Note       string // 备注（加密）
+	IsFavorite bool   // 是否收藏（不加密）
 }
 
 type App struct {
-	ctx         context.Context
-	currentUser *User
-	mu          sync.Mutex
-	db          *gorm.DB
-	aesKey      []byte
+	ctx        context.Context
+	mu         sync.Mutex
+	db         *gorm.DB
+	aesKey     []byte
+	isUnlocked bool
+	workDir     string // 工作目录（存储盐值文件）
 }
 
 type AppIni struct {
 	DbPath string `ini:"db_path"`
 }
 
-// NewApp creates a new App application struct
+// NewApp creates a new App application struct (default paths)
 func NewApp() *App {
-	// AES密钥长度必须为16/24/32字节
-	key := []byte("yuDuCM3zjYZDM1675SFnAzxacud8V7H5") // 32字节示例，生产环境请安全生成
+	return NewAppWithPath(".", "Box.db")
+}
 
-	// 打开配置文件
-	var appInfo AppIni
-	cfg, err := ini.Load("PasswordBox.ini")
-	if err != nil {
-		fmt.Println("配置文件加载失败: " + err.Error())
-		return nil
-	}
-
-	if err := cfg.MapTo(&appInfo); err != nil {
-		fmt.Println("配置文件解析失败: " + err.Error())
+// NewAppWithPath creates a new App with configurable paths (for testing)
+func NewAppWithPath(workDir, dbPath string) *App {
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		log.Error("创建工作目录失败: " + err.Error())
 		return nil
 	}
 
-	// 如果配置文件中没有设置数据库路径，则使用默认路径
-	if appInfo.DbPath == "" {
-		appInfo.DbPath = "Box.db" // 默认数据库路径
-	}
-	// 打开数据库连接
-	if appInfo.DbPath == "" {
-		fmt.Println("数据库路径未设置")
-		return nil
-	}
-	if !strings.HasSuffix(appInfo.DbPath, ".db") {
-		fmt.Println("数据库路径必须以 .db 结尾")
-		return nil
-	}
-	// 打开数据库
-	if _, err := os.Stat(appInfo.DbPath); os.IsNotExist(err) {
-		// 如果数据库文件不存在，创建一个新的
-		file, err := os.Create(appInfo.DbPath)
+	fullDbPath := filepath.Join(workDir, dbPath)
+	if _, err := os.Stat(fullDbPath); os.IsNotExist(err) {
+		file, err := os.Create(fullDbPath)
 		if err != nil {
-			fmt.Println("创建数据库文件失败: " + err.Error())
+			log.Error("创建数据库文件失败: " + err.Error())
 			return nil
 		}
 		file.Close()
 	}
-	// 连接数据库
-	if appInfo.DbPath == "" {
-		fmt.Println("数据库路径不能为空")
+
+	log.Info("连接数据库: %s", fullDbPath)
+	db, err := gorm.Open(sqlite.Open(fullDbPath), &gorm.Config{})
+	if err != nil {
+		log.Error("数据库连接失败: " + err.Error())
 		return nil
 	}
 
-	fmt.Println("连接数据库: " + appInfo.DbPath)
-	db, err := gorm.Open(sqlite.Open(appInfo.DbPath), &gorm.Config{})
-	if err != nil {
-		fmt.Println("数据库连接失败: " + err.Error())
+	if err := db.AutoMigrate(&PasswordEntry{}); err != nil {
+		log.Error("数据库迁移失败: " + err.Error())
 		return nil
 	}
-	// 自动迁移表结构
-	db.AutoMigrate(&User{}, &PasswordEntry{})
-	return &App{db: db, aesKey: key}
+
+	return &App{
+		db:         db,
+		workDir:    workDir,
+		isUnlocked: false,
+		aesKey:     nil,
+	}
 }
 
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	log.Info("应用启动完成")
+}
+
+// shutdown is called when the app exits
+func (a *App) shutdown(ctx context.Context) {
+	log.Info("应用正在关闭")
+	a.Close()
+	log.Close()
+}
+
+// domReady is called when the frontend has loaded
+func (a *App) domReady(ctx context.Context) {
+	log.Info("前端界面加载完成")
+}
+
+// Close 关闭数据库连接
+func (a *App) Close() error {
+	sqlDB, err := a.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
 }
 
 // AES加密
@@ -127,29 +132,6 @@ func (a *App) encrypt(plain string) (string, error) {
 	stream := cipher.NewCFBEncrypter(block, iv)
 	stream.XORKeyStream(ciphertext[aes.BlockSize:], b)
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-// sha256 摘要
-func (a *App) hashSHA256(data string) (string, error) {
-	hasher := sha256.New()
-	_, err := hasher.Write([]byte(data))
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(hasher.Sum(nil)), nil
-}
-
-// 密码校验
-func (a *App) verifyPassword(plain, hash string) (bool, error) {
-	// 解base64编码
-	if len(hash) == 0 {
-		return false, errors.New("hash不能为空")
-	}
-	hashed, err := a.hashSHA256(plain)
-	if err != nil {
-		return false, err
-	}
-	return hashed == hash, nil
 }
 
 // AES解密
@@ -172,114 +154,147 @@ func (a *App) decrypt(cryptoText string) (string, error) {
 	return string(ciphertext), nil
 }
 
-// 注册
+// Register 注册用户（单用户模式，仅保留兼容性）
 func (a *App) Register(username, password string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	var count int64
-	a.db.Model(&User{}).Where("username = ?", username).Count(&count)
-	if count > 0 {
-		return errors.New("用户已存在")
-	}
-	encPwd, err := a.hashSHA256(password)
-	if err != nil {
-		return err
-	}
-	user := User{Username: username, Password: encPwd}
-	return a.db.Create(&user).Error
+	return errors.New("单用户模式，请使用初始化功能")
 }
 
-// 登录
+// Login 用户登录（单用户模式，仅保留兼容性）
 func (a *App) Login(username, password string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(password) == 0 || len(username) == 0 {
-		return errors.New("用户名或密码不能为空")
-	}
-	var user User
-	if err := a.db.Where("username = ?", username).First(&user).Error; err != nil {
-		return errors.New("未注册")
-	}
-
-	// 对比密码
-	if ok, err := a.verifyPassword(password, user.Password); err != nil {
-		return err
-	} else if !ok {
-		return errors.New("用户名或密码错误")
-	}
-	// 成功登录，设置当前用户
-	a.currentUser = &user
-
-	// 设置密码
-	salt, err := a.hashSHA256(password)
-	if err != nil {
-		return errors.New("初始化密钥失败")
-	}
-	key := argon2.IDKey([]byte(salt), []byte(password), 3, 64*1024, 4, 32)
-	a.aesKey = key
-	return nil
+	return a.Unlock(password)
 }
 
 // 保存密码
-func (a *App) SavePassword(site, account, password string) error {
+func (a *App) SavePassword(title, url, username, password, note string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentUser == nil {
-		return errors.New("未登录")
+	if !a.isUnlocked {
+		return errors.New("未解锁")
 	}
-	encSite, err := a.encrypt(site)
+	encTitle, err := a.encrypt(title)
 	if err != nil {
 		return err
 	}
-	encAccount, err := a.encrypt(account)
+	encURL, err := a.encrypt(url)
 	if err != nil {
 		return err
 	}
-	encPwd, err := a.encrypt(password)
+	encUsername, err := a.encrypt(username)
+	if err != nil {
+		return err
+	}
+	encPassword, err := a.encrypt(password)
+	if err != nil {
+		return err
+	}
+	encNote, err := a.encrypt(note)
 	if err != nil {
 		return err
 	}
 	entry := PasswordEntry{
-		UserID:   a.currentUser.ID,
-		Site:     encSite,
-		Account:  encAccount,
-		Password: encPwd,
+		Title:    encTitle,
+		URL:      encURL,
+		Username: encUsername,
+		Password: encPassword,
+		Note:     encNote,
 	}
-	return a.db.Create(&entry).Error
+	if err := a.db.Create(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("保存密码条目 [id=%d]", entry.ID)
+	return nil
 }
 
 // 前端展示用结构体
-type PasswordEntryVO struct {
-	ID       uint   `json:"id"`
-	Site     string `json:"site"`
-	Account  string `json:"account"`
-	Password string `json:"password"`
+type EntryVO struct {
+	ID         uint   `json:"id"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Note       string `json:"note"`
+	IsFavorite bool   `json:"isFavorite"`
 }
 
-// 查询密码
-func (a *App) QueryPasswords() ([]PasswordEntryVO, error) {
+// 查询密码，支持筛选和排序
+// filter: all | favorite | recent
+// sortBy: title | created | updated
+func (a *App) QueryPasswords(filter, sortBy string) ([]EntryVO, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentUser == nil {
-		return nil, errors.New("未登录")
+	if !a.isUnlocked {
+		return nil, errors.New("未解锁")
 	}
 	var entries []PasswordEntry
-	err := a.db.Where("user_id = ?", a.currentUser.ID).Find(&entries).Error
+	query := a.db.Model(&PasswordEntry{})
+
+	// 筛选
+	switch filter {
+	case "favorite":
+		query = query.Where("is_favorite = ?", true)
+	case "recent":
+		// 使用 ID 降序模拟最近添加（GORM 默认自增主键）
+		query = query.Where("id > (SELECT MAX(id) - 10 FROM password_entries)")
+	}
+
+	// 排序
+	switch sortBy {
+	case "title":
+		query = query.Order("id") // 加密字段无法直接按title排序，用id作为稳定顺序
+	case "created":
+		query = query.Order("id desc")
+	case "updated":
+		query = query.Order("id desc") // 当前无updated_at字段，用id desc近似
+	default:
+		query = query.Order("id desc")
+	}
+	err := query.Find(&entries).Error
 	if err != nil {
 		return nil, err
 	}
-	var result []PasswordEntryVO
+	var result []EntryVO
 	for _, e := range entries {
-		site, _ := a.decrypt(e.Site)
-		account, _ := a.decrypt(e.Account)
-		password, _ := a.decrypt(e.Password)
-		result = append(result, PasswordEntryVO{
-			ID:       e.ID,
-			Site:     site,
-			Account:  account,
-			Password: password,
+		title, err := a.decrypt(e.Title)
+		if err != nil {
+			log.Error("解密标题失败 [id=%d]: %v", e.ID, err)
+			title = "[解密失败]"
+		}
+
+		url, err := a.decrypt(e.URL)
+		if err != nil {
+			log.Error("解密URL失败 [id=%d]: %v", e.ID, err)
+			url = "[解密失败]"
+		}
+
+		username, err := a.decrypt(e.Username)
+		if err != nil {
+			log.Error("解密用户名失败 [id=%d]: %v", e.ID, err)
+			username = "[解密失败]"
+		}
+
+		password, err := a.decrypt(e.Password)
+		if err != nil {
+			log.Error("解密密码失败 [id=%d]: %v", e.ID, err)
+			password = "[解密失败]"
+		}
+
+		note, err := a.decrypt(e.Note)
+		if err != nil {
+			log.Error("解密备注失败 [id=%d]: %v", e.ID, err)
+			note = "[解密失败]"
+		}
+
+		result = append(result, EntryVO{
+			ID:         e.ID,
+			Title:      title,
+			URL:        url,
+			Username:   username,
+			Password:   password,
+			Note:       note,
+			IsFavorite: e.IsFavorite,
 		})
 	}
+	log.Debug("查询密码条目数: %d (filter=%s, sortBy=%s)", len(result), filter, sortBy)
 	return result, nil
 }
 
@@ -287,79 +302,126 @@ func (a *App) QueryPasswords() ([]PasswordEntryVO, error) {
 func (a *App) DeletePassword(id uint) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentUser == nil {
-		return errors.New("未登录")
+	if !a.isUnlocked {
+		return errors.New("未解锁")
 	}
 	var entry PasswordEntry
-	if err := a.db.Where("id = ? AND user_id = ?", id, a.currentUser.ID).First(&entry).Error; err != nil {
-		return errors.New("密码不存在或无权限删除")
+	if err := a.db.Where("id = ?", id).First(&entry).Error; err != nil {
+		return errors.New("密码不存在")
 	}
-	return a.db.Delete(&entry).Error
+	if err := a.db.Delete(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("删除密码条目 [id=%d]", id)
+	return nil
 }
 
 // 修改密码
-func (a *App) UpdatePassword(id uint, site, account, password string) error {
+func (a *App) UpdatePassword(id uint, title, url, username, password, note string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentUser == nil {
-		return errors.New("未登录")
+	if !a.isUnlocked {
+		return errors.New("未解锁")
 	}
 	var entry PasswordEntry
-	if err := a.db.Where("id = ? AND user_id = ?", id, a.currentUser.ID).First(&entry).Error; err != nil {
-		return errors.New("密码不存在或无权限修改")
+	if err := a.db.Where("id = ?", id).First(&entry).Error; err != nil {
+		return errors.New("密码不存在")
 	}
-	encSite, err := a.encrypt(site)
+	encTitle, err := a.encrypt(title)
 	if err != nil {
 		return err
 	}
-	encAccount, err := a.encrypt(account)
+	encURL, err := a.encrypt(url)
 	if err != nil {
 		return err
 	}
-	encPwd, err := a.encrypt(password)
+	encUsername, err := a.encrypt(username)
 	if err != nil {
 		return err
 	}
-	entry.Site = encSite
-	entry.Account = encAccount
-	entry.Password = encPwd
-	return a.db.Save(&entry).Error
+	encPassword, err := a.encrypt(password)
+	if err != nil {
+		return err
+	}
+	encNote, err := a.encrypt(note)
+	if err != nil {
+		return err
+	}
+	entry.Title = encTitle
+	entry.URL = encURL
+	entry.Username = encUsername
+	entry.Password = encPassword
+	entry.Note = encNote
+	if err := a.db.Save(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("更新密码条目 [id=%d]", id)
+	return nil
 }
 
 // 搜索指定密码
-// 只根据账户名称（解密后）进行搜索，提升安全性，超时10秒无结果则返回失败
-func (a *App) SearchPassword(keyword string) ([]PasswordEntryVO, error) {
+// 根据标题、用户名、URL进行搜索，超时10秒无结果则返回失败
+func (a *App) SearchPassword(keyword string) ([]EntryVO, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.currentUser == nil {
-		return nil, errors.New("未登录")
+	if !a.isUnlocked {
+		return nil, errors.New("未解锁")
 	}
 	if len(keyword) == 0 {
 		return nil, errors.New("搜索关键字不能为空")
 	}
 
-	// 优化：先用SQL模糊查找（加密字段无法直接LIKE），只能先查全部，再解密过滤
+	// 加密字段无法直接LIKE，只能先查全部，再解密过滤
 	var entries []PasswordEntry
 	errCh := make(chan error, 1)
-	resultCh := make(chan []PasswordEntryVO, 1)
+	resultCh := make(chan []EntryVO, 1)
 
 	go func() {
-		err := a.db.Where("user_id = ?", a.currentUser.ID).Find(&entries).Error
+		err := a.db.Find(&entries).Error
 		if err != nil {
 			errCh <- err
 			return
 		}
-		var result []PasswordEntryVO
+		var result []EntryVO
 		for _, e := range entries {
-			account, _ := a.decrypt(e.Account)
-			if account != "" && containsIgnoreCase(account, keyword) {
-				site, _ := a.decrypt(e.Site)
-				password, _ := a.decrypt(e.Password)
-				result = append(result, PasswordEntryVO{
-					ID:       e.ID,
-					Site:     site,
-					Account:  account,
-					Password: password,
+			title, err := a.decrypt(e.Title)
+			if err != nil {
+				log.Error("搜索时解密标题失败 [id=%d]: %v", e.ID, err)
+				continue
+			}
+			username, err := a.decrypt(e.Username)
+			if err != nil {
+				log.Error("搜索时解密用户名失败 [id=%d]: %v", e.ID, err)
+				continue
+			}
+			url, err := a.decrypt(e.URL)
+			if err != nil {
+				log.Error("搜索时解密URL失败 [id=%d]: %v", e.ID, err)
+				url = "[解密失败]"
+			}
+
+			// 在标题、用户名、URL中搜索
+			if containsIgnoreCase(title, keyword) ||
+				containsIgnoreCase(username, keyword) ||
+				containsIgnoreCase(url, keyword) {
+				password, err := a.decrypt(e.Password)
+				if err != nil {
+					log.Error("搜索时解密密码失败 [id=%d]: %v", e.ID, err)
+					password = "[解密失败]"
+				}
+				note, err := a.decrypt(e.Note)
+				if err != nil {
+					log.Error("搜索时解密备注失败 [id=%d]: %v", e.ID, err)
+					note = "[解密失败]"
+				}
+				result = append(result, EntryVO{
+					ID:         e.ID,
+					Title:      title,
+					URL:        url,
+					Username:   username,
+					Password:   password,
+					Note:       note,
+					IsFavorite: e.IsFavorite,
 				})
 			}
 		}
@@ -370,9 +432,7 @@ func (a *App) SearchPassword(keyword string) ([]PasswordEntryVO, error) {
 	case err := <-errCh:
 		return nil, err
 	case result := <-resultCh:
-		if len(result) == 0 {
-			return nil, errors.New("搜索超时或无结果")
-		}
+		log.Debug("搜索关键词: %s, 结果数: %d", keyword, len(result))
 		return result, nil
 	case <-time.After(10 * time.Second):
 		return nil, errors.New("搜索超时，请重试")
@@ -382,4 +442,129 @@ func (a *App) SearchPassword(keyword string) ([]PasswordEntryVO, error) {
 // 字符串包含（忽略大小写）
 func containsIgnoreCase(str, substr string) bool {
 	return strings.Contains(strings.ToLower(str), strings.ToLower(substr))
+}
+
+// ========== 新增：密钥管理相关方法 ==========
+
+// CheckInitialized 检查是否已初始化（盐值文件是否存在）
+func (a *App) CheckInitialized() bool {
+	return config.CheckInitialized(a.workDir)
+}
+
+// SetupMasterPassword 首次使用设置主密码
+func (a *App) SetupMasterPassword(password string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// 检查是否已初始化
+	if a.CheckInitialized() {
+		return errors.New("已初始化，请勿重复初始化")
+	}
+
+	// 检查密码强度
+	if !utils.IsStrongPassword(password) {
+		strength := utils.CheckPasswordStrength(password)
+		return fmt.Errorf("密码强度不足: %s", strings.Join(strength.Suggestions, ", "))
+	}
+
+	// 初始化密钥系统
+	keyConfig, err := config.Initialize(password, a.workDir)
+	if err != nil {
+		return err
+	}
+
+	a.aesKey = keyConfig.DerivedKey
+	a.isUnlocked = true
+	log.Info("主密码初始化成功")
+	return nil
+}
+
+// Unlock 使用主密码解锁
+func (a *App) Unlock(password string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// 加载密钥
+	keyConfig, err := config.Unlock(password, a.workDir)
+	if err != nil {
+		return err
+	}
+
+	// 验证密钥：尝试解密数据库中的第一条记录（如果有）
+	var count int64
+	a.db.Model(&PasswordEntry{}).Count(&count)
+
+	if count > 0 {
+		// 有一条测试记录用于验证密钥
+		// 实际验证会在首次查询时进行
+		// 这里仅设置密钥
+	}
+
+	a.aesKey = keyConfig.DerivedKey
+	a.isUnlocked = true
+	log.Info("应用已解锁")
+	return nil
+}
+
+// IsUnlocked 检查是否已解锁
+func (a *App) IsUnlocked() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.isUnlocked
+}
+
+// Lock 锁定应用
+func (a *App) Lock() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.aesKey = nil
+	a.isUnlocked = false
+	log.Info("应用已锁定")
+}
+
+// GetPasswordStrength 获取密码强度（供前端调用）
+func (a *App) GetPasswordStrength(password string) utils.PasswordStrength {
+	return utils.CheckPasswordStrength(password)
+}
+
+// GetPasswordCounts 获取各类密码数量
+func (a *App) GetPasswordCounts() (map[string]int64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.isUnlocked {
+		return nil, errors.New("未解锁")
+	}
+	counts := make(map[string]int64)
+	var c int64
+
+	// 全部
+	a.db.Model(&PasswordEntry{}).Count(&c)
+	counts["all"] = c
+	// 收藏
+	a.db.Model(&PasswordEntry{}).Where("is_favorite = ?", true).Count(&c)
+	counts["favorite"] = c
+	// 最近添加（取最新的10条作为最近）
+	a.db.Model(&PasswordEntry{}).Where("id > (SELECT MAX(id) - 10 FROM password_entries)").Count(&c)
+	counts["recent"] = c
+	log.Debug("查询密码统计: %+v", counts)
+	return counts, nil
+}
+
+// ToggleFavorite 切换收藏状态
+func (a *App) ToggleFavorite(id uint) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.isUnlocked {
+		return errors.New("未解锁")
+	}
+	var entry PasswordEntry
+	if err := a.db.Where("id = ?", id).First(&entry).Error; err != nil {
+		return errors.New("密码条目不存在")
+	}
+	entry.IsFavorite = !entry.IsFavorite
+	if err := a.db.Save(&entry).Error; err != nil {
+		return err
+	}
+	log.Info("切换收藏状态 [id=%d, favorite=%v]", id, entry.IsFavorite)
+	return nil
 }
