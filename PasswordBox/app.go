@@ -207,15 +207,39 @@ type EntryVO struct {
 	IsFavorite bool   `json:"isFavorite"`
 }
 
-// 查询密码
-func (a *App) QueryPasswords() ([]EntryVO, error) {
+// 查询密码，支持筛选和排序
+// filter: all | favorite | recent
+// sortBy: title | created | updated
+func (a *App) QueryPasswords(filter, sortBy string) ([]EntryVO, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.isUnlocked {
 		return nil, errors.New("未解锁")
 	}
 	var entries []PasswordEntry
-	err := a.db.Find(&entries).Error
+	query := a.db.Model(&PasswordEntry{})
+
+	// 筛选
+	switch filter {
+	case "favorite":
+		query = query.Where("is_favorite = ?", true)
+	case "recent":
+		// 使用 ID 降序模拟最近添加（GORM 默认自增主键）
+		query = query.Where("id > (SELECT MAX(id) - 10 FROM password_entries)")
+	}
+
+	// 排序
+	switch sortBy {
+	case "title":
+		query = query.Order("id") // 加密字段无法直接按title排序，用id作为稳定顺序
+	case "created":
+		query = query.Order("id desc")
+	case "updated":
+		query = query.Order("id desc") // 当前无updated_at字段，用id desc近似
+	default:
+		query = query.Order("id desc")
+	}
+	err := query.Find(&entries).Error
 	if err != nil {
 		return nil, err
 	}
@@ -479,6 +503,29 @@ func (a *App) Lock() {
 // GetPasswordStrength 获取密码强度（供前端调用）
 func (a *App) GetPasswordStrength(password string) utils.PasswordStrength {
 	return utils.CheckPasswordStrength(password)
+}
+
+// GetPasswordCounts 获取各类密码数量
+func (a *App) GetPasswordCounts() (map[string]int64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.isUnlocked {
+		return nil, errors.New("未解锁")
+	}
+	counts := make(map[string]int64)
+	var c int64
+
+	// 全部
+	a.db.Model(&PasswordEntry{}).Count(&c)
+	counts["all"] = c
+	// 收藏
+	a.db.Model(&PasswordEntry{}).Where("is_favorite = ?", true).Count(&c)
+	counts["favorite"] = c
+	// 最近添加（取最新的10条作为最近）
+	a.db.Model(&PasswordEntry{}).Where("id > (SELECT MAX(id) - 10 FROM password_entries)").Count(&c)
+	counts["recent"] = c
+
+	return counts, nil
 }
 
 // ToggleFavorite 切换收藏状态

@@ -10,6 +10,10 @@ export function DeletePassword(arg1) {
   return window['go']['main']['App']['DeletePassword'](arg1);
 }
 
+export function GetPasswordCounts() {
+  return window['go']['main']['App']['GetPasswordCounts']();
+}
+
 export function GetPasswordStrength(arg1) {
   return window['go']['main']['App']['GetPasswordStrength'](arg1);
 }
@@ -26,8 +30,8 @@ export function Login(arg1, arg2) {
   return window['go']['main']['App']['Login'](arg1, arg2);
 }
 
-export function QueryPasswords() {
-  return window['go']['main']['App']['QueryPasswords']();
+export function QueryPasswords(arg1, arg2) {
+  return window['go']['main']['App']['QueryPasswords'](arg1, arg2);
 }
 
 export function Register(arg1, arg2) {

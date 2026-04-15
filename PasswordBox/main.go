@@ -17,9 +17,11 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "PasswordBox",
-		Width:  550,
-		Height: 400,
+		Title:     "PasswordBox",
+		Width:     1024,
+		Height:    700,
+		MinWidth:  900,
+		MinHeight: 600,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

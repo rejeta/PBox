@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import 'element-plus/dist/index.css'
+import PasswordList from './components/PasswordList.vue'
 import {
   CheckInitialized,
   SetupMasterPassword,
@@ -9,11 +10,10 @@ import {
   Lock,
   SavePassword,
   QueryPasswords,
-  DeletePassword,
   UpdatePassword,
   SearchPassword,
-  ToggleFavorite,
-  GetPasswordStrength
+  GetPasswordStrength,
+  GetPasswordCounts
 } from '../wailsjs/go/main/App'
 
 // ========== 状态 ==========
@@ -83,6 +83,7 @@ const handleSetup = async () => {
     initialized.value = true
     mode.value = 'main'
     await fetchPasswords()
+    await loadCounts()
   } catch (e) {
     ElMessage.error(e.message || String(e))
   }
@@ -99,6 +100,7 @@ const handleUnlock = async () => {
     ElMessage.success('解锁成功！')
     mode.value = 'main'
     await fetchPasswords()
+    await loadCounts()
   } catch (e) {
     ElMessage.error(e.message || String(e))
   }
@@ -126,18 +128,41 @@ const handleSave = async () => {
     ElMessage.success('保存成功！')
     saveForm.title = saveForm.url = saveForm.username = saveForm.password = saveForm.note = ''
     await fetchPasswords()
+    await loadCounts()
   } catch (e) {
     ElMessage.error(e.message || String(e))
   }
 }
 
-// ========== 获取全部密码 ==========
+// ========== 筛选与排序 ==========
+const listFilter = ref('all') // all | favorite | recent
+const listSortBy = ref('created') // title | created | updated
+const counts = ref({ all: 0, favorite: 0, recent: 0 })
+
 const fetchPasswords = async () => {
   try {
-    passwords.value = await QueryPasswords()
+    passwords.value = await QueryPasswords(listFilter.value, listSortBy.value)
   } catch (e) {
     passwords.value = []
   }
+}
+
+const loadCounts = async () => {
+  try {
+    counts.value = await GetPasswordCounts()
+  } catch (e) {
+    counts.value = { all: 0, favorite: 0, recent: 0 }
+  }
+}
+
+const onFilterChange = async (filter) => {
+  listFilter.value = filter
+  await fetchPasswords()
+}
+
+const onSortChange = async (sort) => {
+  listSortBy.value = sort
+  await fetchPasswords()
 }
 
 // ========== 搜索 ==========
@@ -173,34 +198,12 @@ const handleEdit = async () => {
     ElMessage.success('更新成功！')
     editDialogVisible.value = false
     await fetchPasswords()
+    await loadCounts()
     if (searchKeyword.value.trim()) await handleSearch()
   } catch (e) {
     ElMessage.error(e.message || String(e))
   } finally {
     editLoading.value = false
-  }
-}
-
-// ========== 删除 ==========
-const handleDelete = async (row) => {
-  ElMessageBox.confirm('确定要删除该密码吗？', '提示', { type: 'warning' })
-    .then(async () => {
-      await DeletePassword(row.id)
-      ElMessage.success('删除成功！')
-      await fetchPasswords()
-      if (searchKeyword.value.trim()) await handleSearch()
-    })
-    .catch(() => {})
-}
-
-// ========== 收藏 ==========
-const handleToggleFavorite = async (row) => {
-  try {
-    await ToggleFavorite(row.id)
-    await fetchPasswords()
-    if (searchKeyword.value.trim()) await handleSearch()
-  } catch (e) {
-    ElMessage.error(e.message || String(e))
   }
 }
 
@@ -278,118 +281,131 @@ const toggleShowPwd = (id) => {
       </el-card>
 
       <!-- 主界面 -->
-      <el-card v-else class="box-card">
+      <el-card v-else class="box-card main-card">
         <template #header>
           <span>密码管理</span>
           <el-button type="danger" size="small" style="float:right;" @click="handleLock">锁定</el-button>
         </template>
-        <div style="display: flex; flex-direction: column; gap: 24px;">
-          <!-- 搜索 -->
-          <div style="background: #f8fafd; border-radius: 8px; padding: 18px 18px 12px 18px; box-shadow: 0 1px 4px #e6e6e6;">
-            <div style="margin-bottom: 18px; display: flex; align-items: center; gap: 12px;">
-              <el-input
-                v-model="searchKeyword"
-                placeholder="搜索标题、用户名或网址"
-                clearable
-                style="max-width: 320px;"
-                @input="handleSearch"
-                @clear="handleSearch"
-                :disabled="searchLoading"
+        <div class="main-layout">
+          <!-- 侧边栏 -->
+          <aside class="sidebar">
+            <el-menu :default-active="listFilter" @select="onFilterChange" class="filter-menu">
+              <el-menu-item index="all">
+                <el-icon><Folder /></el-icon>
+                <span>全部</span>
+                <el-tag size="small" type="info" class="count-tag">{{ counts.all }}</el-tag>
+              </el-menu-item>
+              <el-menu-item index="favorite">
+                <el-icon><Star /></el-icon>
+                <span>收藏</span>
+                <el-tag size="small" type="warning" class="count-tag">{{ counts.favorite }}</el-tag>
+              </el-menu-item>
+              <el-menu-item index="recent">
+                <el-icon><Timer /></el-icon>
+                <span>最近添加</span>
+                <el-tag size="small" type="success" class="count-tag">{{ counts.recent }}</el-tag>
+              </el-menu-item>
+            </el-menu>
+
+          </aside>
+
+          <!-- 内容区 -->
+          <div class="content">
+            <!-- 搜索 -->
+            <div class="section search-section">
+              <div style="margin-bottom: 18px; display: flex; align-items: center; gap: 12px;">
+                <el-input
+                  v-model="searchKeyword"
+                  placeholder="搜索标题、用户名或网址"
+                  clearable
+                  style="max-width: 320px;"
+                  @keyup.enter="handleSearch"
+                  @clear="handleSearch"
+                  :disabled="searchLoading"
+                />
+                <el-button :loading="searchLoading" @click="handleSearch" type="primary">搜索</el-button>
+              </div>
+              <template v-if="searchKeyword && searchKeyword.trim() !== ''">
+                <div style="margin-bottom: 10px; color: #409EFF; font-size: 15px;">
+                  <span>搜索"{{ searchKeyword }}"的结果，共 {{ searchResults.length }} 条</span>
+                </div>
+                <el-table v-if="searchResults.length > 0" :data="searchResults" style="width: 100%;" stripe>
+                  <el-table-column prop="title" label="标题" />
+                  <el-table-column prop="url" label="网址" />
+                  <el-table-column prop="username" label="用户名" />
+                  <el-table-column prop="password" label="密码">
+                    <template #default="scope">
+                      <span v-if="!showPwdMap[scope.row.id]">********</span>
+                      <span v-else>{{ scope.row.password }}</span>
+                      <el-button size="small" text @click="toggleShowPwd(scope.row.id)">
+                        {{ showPwdMap[scope.row.id] ? '隐藏' : '显示' }}
+                      </el-button>
+                      <el-button size="small" type="primary" text @click="copyPassword(scope.row.password)">复制</el-button>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="180">
+                    <template #default="scope">
+                      <el-button size="small" @click="openEdit(scope.row)">编辑</el-button>
+                      <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <div v-else class="search-empty">
+                  <el-empty description="未找到匹配的密码条目" :image-size="80" />
+                </div>
+              </template>
+            </div>
+
+            <!-- 保存密码 -->
+            <div class="section save-section">
+              <el-form :model="saveForm" label-width="80px" class="save-form-vertical">
+                <el-row :gutter="12">
+                  <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                    <el-form-item label="标题">
+                      <el-input v-model="saveForm.title" placeholder="如 GitHub" clearable />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                    <el-form-item label="网址">
+                      <el-input v-model="saveForm.url" placeholder="如 https://github.com" clearable />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                    <el-form-item label="用户名">
+                      <el-input v-model="saveForm.username" placeholder="用户名/邮箱" clearable />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="12" :md="8" :lg="6">
+                    <el-form-item label="密码">
+                      <el-input v-model="saveForm.password" placeholder="密码" show-password clearable />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="24" :md="16" :lg="12">
+                    <el-form-item label="备注">
+                      <el-input v-model="saveForm.note" placeholder="备注信息" clearable />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="24" :md="8" :lg="6">
+                    <el-form-item label-width="0">
+                      <el-button type="primary" @click="handleSave" style="width:100%">保存</el-button>
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+              </el-form>
+            </div>
+
+            <!-- 密码列表 -->
+            <div class="section list-section">
+              <PasswordList
+                :passwords="passwords"
+                :show-pwd-map="showPwdMap"
+                :sort-by="listSortBy"
+                @refresh="fetchPasswords"
+                @edit="openEdit"
+                @toggle-pwd="toggleShowPwd"
+                @copy-pwd="copyPassword"
+                @sort-change="onSortChange"
               />
-              <el-button :loading="searchLoading" @click="handleSearch" type="primary">搜索</el-button>
-            </div>
-            <div v-if="searchKeyword && searchKeyword.trim() !== ''" style="margin-bottom: 10px; color: #409EFF; font-size: 15px;">
-              <span>搜索"{{ searchKeyword }}"的结果，共 {{ searchResults.length }} 条</span>
-            </div>
-            <el-table v-if="searchKeyword && searchKeyword.trim() !== ''" :data="searchResults" style="width: 100%;">
-              <el-table-column prop="title" label="标题" />
-              <el-table-column prop="url" label="网址" />
-              <el-table-column prop="username" label="用户名" />
-              <el-table-column prop="password" label="密码">
-                <template #default="scope">
-                  <span v-if="!showPwdMap[scope.row.id]">********</span>
-                  <span v-else>{{ scope.row.password }}</span>
-                  <el-button size="small" style="margin-left:8px;" @click="toggleShowPwd(scope.row.id)">
-                    <span v-if="!showPwdMap[scope.row.id]">显示</span>
-                    <span v-else>隐藏</span>
-                  </el-button>
-                  <el-button size="small" type="primary" style="margin-left:8px;" @click="copyPassword(scope.row.password)">复制</el-button>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="180">
-                <template #default="scope">
-                  <el-button size="small" @click="openEdit(scope.row)">编辑</el-button>
-                  <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <!-- 保存密码 -->
-          <div style="background: #fff; border-radius: 8px; padding: 18px 18px 12px 18px; box-shadow: 0 1px 4px #e6e6e6;">
-            <el-form :model="saveForm" label-width="80px" class="save-form-vertical">
-              <el-row :gutter="12">
-                <el-col :xs="24" :sm="12" :md="8" :lg="6">
-                  <el-form-item label="标题">
-                    <el-input v-model="saveForm.title" placeholder="如 GitHub" clearable />
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="24" :sm="12" :md="8" :lg="6">
-                  <el-form-item label="网址">
-                    <el-input v-model="saveForm.url" placeholder="如 https://github.com" clearable />
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="24" :sm="12" :md="8" :lg="6">
-                  <el-form-item label="用户名">
-                    <el-input v-model="saveForm.username" placeholder="用户名/邮箱" clearable />
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="24" :sm="12" :md="8" :lg="6">
-                  <el-form-item label="密码">
-                    <el-input v-model="saveForm.password" placeholder="密码" show-password clearable />
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="24" :sm="24" :md="16" :lg="12">
-                  <el-form-item label="备注">
-                    <el-input v-model="saveForm.note" placeholder="备注信息" clearable />
-                  </el-form-item>
-                </el-col>
-                <el-col :xs="24" :sm="24" :md="8" :lg="6">
-                  <el-form-item label-width="0">
-                    <el-button type="primary" @click="handleSave" style="width:100%">保存</el-button>
-                  </el-form-item>
-                </el-col>
-              </el-row>
-            </el-form>
-
-            <!-- 全部密码 -->
-            <div style="margin-top: 20px;">
-              <div style="font-size: 15px; color: #222; margin-bottom: 8px;">全部密码</div>
-              <el-table :data="passwords" style="width: 100%;">
-                <el-table-column prop="title" label="标题" />
-                <el-table-column prop="url" label="网址" />
-                <el-table-column prop="username" label="用户名" />
-                <el-table-column prop="password" label="密码">
-                  <template #default="scope">
-                    <span v-if="!showPwdMap[scope.row.id]">********</span>
-                    <span v-else>{{ scope.row.password }}</span>
-                    <el-button size="small" style="margin-left:8px;" @click="toggleShowPwd(scope.row.id)">
-                      <span v-if="!showPwdMap[scope.row.id]">显示</span>
-                      <span v-else>隐藏</span>
-                    </el-button>
-                    <el-button size="small" type="primary" style="margin-left:8px;" @click="copyPassword(scope.row.password)">复制</el-button>
-                  </template>
-                </el-table-column>
-                <el-table-column label="操作" width="220">
-                  <template #default="scope">
-                    <el-button size="small" @click="openEdit(scope.row)">编辑</el-button>
-                    <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
-                    <el-button size="small" :type="scope.row.isFavorite ? 'warning' : 'default'" @click="handleToggleFavorite(scope.row)">
-                      {{ scope.row.isFavorite ? '取消收藏' : '收藏' }}
-                    </el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
             </div>
 
             <el-dialog v-model="editDialogVisible" title="编辑密码" width="450px">
@@ -437,13 +453,13 @@ const toggleShowPwd = (id) => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
 }
 .main-gui {
-  width: 100vw;
-  min-height: 100vh;
-  margin: 0;
-  padding: 0 0.5vw;
+  width: 100%;
+  max-width: 1400px;
+  height: 100vh;
+  margin: 0 auto;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -455,6 +471,11 @@ const toggleShowPwd = (id) => {
   width: 100%;
   box-sizing: border-box;
 }
+/* 登录/设置界面卡片居中且限制最大宽度 */
+.box-card:not(.main-card) {
+  margin: auto;
+  max-width: 480px;
+}
 .center {
   text-align: center;
   padding: 40px;
@@ -463,5 +484,122 @@ const toggleShowPwd = (id) => {
   width: 100%;
   margin-left: 0;
   margin-bottom: 0;
+}
+.main-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 0;
+}
+.main-card .el-card__body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+.main-layout {
+  display: flex;
+  gap: 16px;
+  min-height: 0;
+}
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  padding: 8px 0;
+}
+.filter-menu {
+  border-right: none;
+}
+.filter-menu .el-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.count-tag {
+  margin-left: auto;
+}
+.content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+.section {
+  background: #fff;
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid #e4e7ed;
+}
+.search-section {
+  background: #f8fafd;
+}
+.search-empty {
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.save-section {
+  background: #fff;
+}
+.list-section {
+  background: #fff;
+  padding: 16px;
+}
+
+/* 小屏响应式 */
+@media (max-width: 768px) {
+  .main-layout {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  .filter-menu {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .filter-menu :deep(.el-menu-item) {
+    height: 36px;
+    line-height: 36px;
+    padding: 0 12px;
+    border-radius: 4px;
+  }
+  .sort-box {
+    border-top: none;
+    border-left: 1px solid #e4e7ed;
+    padding: 4px 8px;
+  }
+}
+
+/* 自定义滚动条（WebKit） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c0c4cc;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #909399;
 }
 </style>

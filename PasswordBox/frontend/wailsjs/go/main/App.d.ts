@@ -7,6 +7,8 @@ export function CheckInitialized():Promise<boolean>;
 
 export function DeletePassword(arg1:number):Promise<void>;
 
+export function GetPasswordCounts():Promise<Record<string, number>>;
+
 export function GetPasswordStrength(arg1:string):Promise<utils.PasswordStrength>;
 
 export function IsUnlocked():Promise<boolean>;
@@ -15,7 +17,7 @@ export function Lock():Promise<void>;
 
 export function Login(arg1:string,arg2:string):Promise<void>;
 
-export function QueryPasswords():Promise<Array<main.EntryVO>>;
+export function QueryPasswords(arg1:string,arg2:string):Promise<Array<main.EntryVO>>;
 
 export function Register(arg1:string,arg2:string):Promise<void>;
 
