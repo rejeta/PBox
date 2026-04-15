@@ -1,6 +1,10 @@
 PasswordBox/PasswordBox.ini
 PasswordBox/Box.db
-*.md
+doc
+PasswordBox/frontend/README.md
+PasswordBox/CHANGELOG.md
+PasswordBox/README.md
+TEST_REPORT.md
 .claude
 PasswordBox/build
 test
