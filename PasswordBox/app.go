@@ -102,6 +102,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	log.Info("应用启动完成")
 	go a.setupSystray()
+	go startShowWindowListener(ctx)
 }
 
 // shutdown is called when the app exits
@@ -141,7 +142,8 @@ func (a *App) onSystrayReady() {
 			case <-mQuit.ClickedCh:
 				go func() {
 					systray.Quit()
-					runtime.Quit(a.ctx)
+					a.shutdown(a.ctx)
+					os.Exit(0)
 				}()
 				return
 			}
