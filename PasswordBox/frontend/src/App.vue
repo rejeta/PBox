@@ -270,9 +270,9 @@ const toggleShowPwd = (id) => {
       <!-- 解锁 -->
       <el-card v-else-if="mode==='unlock'" class="box-card">
         <template #header><span>解锁 PasswordBox</span></template>
-        <el-form :model="unlockForm" label-width="80px">
+        <el-form :model="unlockForm" label-width="80px" @submit.prevent="handleUnlock">
           <el-form-item label="主密码">
-            <el-input v-model="unlockForm.password" type="password" placeholder="请输入主密码" show-password clearable @keyup.enter="handleUnlock" />
+            <el-input v-model="unlockForm.password" type="password" placeholder="请输入主密码" show-password clearable />
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="handleUnlock" style="width:100%">解锁</el-button>
