@@ -15,6 +15,12 @@ import (
 var assets embed.FS
 
 func main() {
+	// 单实例检查
+	if err := acquireSingleInstance(); err != nil {
+		println("PasswordBox 已在运行")
+		return
+	}
+
 	// 初始化日志
 	if err := log.Init(); err != nil {
 		println("Warning: 日志初始化失败:", err.Error())

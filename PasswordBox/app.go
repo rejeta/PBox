@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"fyne.io/systray"
 	"github.com/glebarez/sqlite"
@@ -528,20 +529,27 @@ func (a *App) Unlock(password string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// 加载密钥
+	// 加载密钥（config.Unlock 在 key.dat 存在时会做确定性 verifier 校验）
 	keyConfig, err := config.Unlock(password, a.workDir)
 	if err != nil {
 		return err
 	}
 
-	// 验证密钥：尝试解密数据库中的第一条记录（如果有）
-	var count int64
-	a.db.Model(&PasswordEntry{}).Count(&count)
-
-	if count > 0 {
-		// 有一条测试记录用于验证密钥
-		// 实际验证会在首次查询时进行
-		// 这里仅设置密钥
+	// 如果是旧版 salt.bin，需要通过数据库第一条记录做降级校验，并迁移到 key.dat
+	if keyConfig.IsLegacy {
+		var firstEntry PasswordEntry
+		if err := a.db.Order("id").First(&firstEntry).Error; err == nil {
+			a.aesKey = keyConfig.DerivedKey
+			plain, decryptErr := a.decrypt(firstEntry.Title)
+			if decryptErr != nil || !utf8.ValidString(plain) {
+				a.aesKey = nil
+				return errors.New("主密码错误")
+			}
+		}
+		// 校验通过，生成 key.dat 并移除旧版 salt.bin
+		verifierCipher, _ := a.encrypt("PasswordBoxAuth")
+		_ = config.SaveKeyData(keyConfig.Salt, []byte(verifierCipher), a.workDir)
+		_ = os.Remove(filepath.Join(a.workDir, config.LegacySaltFileName))
 	}
 
 	a.aesKey = keyConfig.DerivedKey

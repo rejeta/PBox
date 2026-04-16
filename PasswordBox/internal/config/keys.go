@@ -2,6 +2,8 @@
 package config
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -14,10 +16,10 @@ import (
 )
 
 const (
-	// SaltFileName 盐值文件名
-	SaltFileName = "salt.bin"
-	// KeyFileName 密钥文件名（可选，用于存储环境变量方式的密钥）
-	KeyFileName = "key.dat"
+	// KeyDataFileName 统一密钥数据文件名（包含盐值 + verifier）
+	KeyDataFileName = "key.dat"
+	// LegacySaltFileName 旧版盐值文件名
+	LegacySaltFileName = "salt.bin"
 )
 
 // KeyConfig 密钥配置
@@ -25,6 +27,13 @@ type KeyConfig struct {
 	Salt        []byte // 16字节随机盐值
 	DerivedKey  []byte // 派生的32字节AES密钥
 	KeyFilePath string // 密钥文件路径
+	IsLegacy    bool   // 是否来自旧版 salt.bin
+}
+
+// KeyFileData 统一密钥文件内容
+type KeyFileData struct {
+	Salt     []byte
+	Verifier []byte
 }
 
 // GenerateSalt 生成随机盐值
@@ -42,81 +51,137 @@ func DeriveKey(password string, salt []byte) []byte {
 	return argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32)
 }
 
-// SaveSalt 保存盐值到文件
+// SaveKeyData 保存统一密钥数据文件（salt + verifier）
+func SaveKeyData(salt, verifier []byte, dir string) error {
+	path := filepath.Join(dir, KeyDataFileName)
+	data := make([]byte, 0, len(salt)+len(verifier))
+	data = append(data, salt...)
+	data = append(data, verifier...)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("保存密钥文件失败: %w", err)
+	}
+	return nil
+}
+
+// LoadKeyData 加载统一密钥数据文件
+func LoadKeyData(dir string) (*KeyFileData, error) {
+	path := filepath.Join(dir, KeyDataFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 16 {
+		return nil, errors.New("密钥文件损坏")
+	}
+	return &KeyFileData{
+		Salt:     data[:16],
+		Verifier: append([]byte(nil), data[16:]...),
+	}, nil
+}
+
+// SaveSalt 保存盐值到旧版文件（兼容函数）
 func SaveSalt(salt []byte, dir string) error {
-	path := filepath.Join(dir, SaltFileName)
-	// 权限设置为仅所有者可读写 (0600)
+	path := filepath.Join(dir, LegacySaltFileName)
 	if err := os.WriteFile(path, salt, 0600); err != nil {
 		return fmt.Errorf("保存盐值失败: %w", err)
 	}
 	return nil
 }
 
-// LoadSalt 从文件加载盐值
+// LoadSalt 从旧版文件加载盐值（兼容函数）
 func LoadSalt(dir string) ([]byte, error) {
-	path := filepath.Join(dir, SaltFileName)
+	return loadLegacySalt(dir)
+}
+
+// loadLegacySalt 从旧版文件加载盐值
+func loadLegacySalt(dir string) ([]byte, error) {
+	path := filepath.Join(dir, LegacySaltFileName)
 	salt, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errors.New("未找到盐值文件，请先初始化")
+			return nil, errors.New("未找到密钥文件，请先初始化")
 		}
 		return nil, fmt.Errorf("读取盐值失败: %w", err)
 	}
 	return salt, nil
 }
 
-// CheckInitialized 检查是否已初始化（盐值文件是否存在）
+// CheckInitialized 检查是否已初始化（key.dat 或旧版 salt.bin 是否存在）
 func CheckInitialized(dir string) bool {
-	path := filepath.Join(dir, SaltFileName)
-	_, err := os.Stat(path)
-	return err == nil
+	if _, err := os.Stat(filepath.Join(dir, KeyDataFileName)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, LegacySaltFileName)); err == nil {
+		return true
+	}
+	return false
 }
 
 // Initialize 初始化密钥系统
-// 首次使用时调用，生成盐值并派生密钥
+// 首次使用时调用，生成盐值、verifier 并写入 key.dat
 func Initialize(password string, dir string) (*KeyConfig, error) {
-	// 检查是否已初始化
 	if CheckInitialized(dir) {
 		return nil, errors.New("已初始化，请勿重复初始化")
 	}
 
-	// 生成16字节随机盐值
 	salt, err := GenerateSalt(16)
 	if err != nil {
 		return nil, err
 	}
 
-	// 保存盐值
-	if err := SaveSalt(salt, dir); err != nil {
-		return nil, err
+	key := DeriveKey(password, salt)
+	verifierCipher, err := encryptWithKey(key, "PasswordBoxAuth")
+	if err != nil {
+		return nil, fmt.Errorf("生成验证器失败: %w", err)
 	}
 
-	// 派生密钥
-	key := DeriveKey(password, salt)
+	if err := SaveKeyData(salt, []byte(verifierCipher), dir); err != nil {
+		return nil, err
+	}
 
 	return &KeyConfig{
 		Salt:        salt,
 		DerivedKey:  key,
-		KeyFilePath: filepath.Join(dir, SaltFileName),
+		KeyFilePath: filepath.Join(dir, KeyDataFileName),
+		IsLegacy:    false,
 	}, nil
 }
 
 // Unlock 使用主密码解锁，派生密钥
+// 优先读取 key.dat 做确定性 verifier 校验；若不存在则降级读取 salt.bin
 func Unlock(password string, dir string) (*KeyConfig, error) {
-	// 加载盐值
-	salt, err := LoadSalt(dir)
-	if err != nil {
-		return nil, err
+	// 尝试新版 key.dat
+	keyFileData, err := LoadKeyData(dir)
+	if err == nil {
+		key := DeriveKey(password, keyFileData.Salt)
+		plain, decryptErr := decryptWithKey(key, string(keyFileData.Verifier))
+		if decryptErr != nil || plain != "PasswordBoxAuth" {
+			return nil, errors.New("主密码错误")
+		}
+		return &KeyConfig{
+			Salt:        keyFileData.Salt,
+			DerivedKey:  key,
+			KeyFilePath: filepath.Join(dir, KeyDataFileName),
+			IsLegacy:    false,
+		}, nil
 	}
 
-	// 派生密钥
-	key := DeriveKey(password, salt)
+	// 降级旧版 salt.bin
+	if os.IsNotExist(err) {
+		salt, err := loadLegacySalt(dir)
+		if err != nil {
+			return nil, err
+		}
+		key := DeriveKey(password, salt)
+		return &KeyConfig{
+			Salt:        salt,
+			DerivedKey:  key,
+			KeyFilePath: filepath.Join(dir, LegacySaltFileName),
+			IsLegacy:    true,
+		}, nil
+	}
 
-	return &KeyConfig{
-		Salt:        salt,
-		DerivedKey:  key,
-		KeyFilePath: filepath.Join(dir, SaltFileName),
-	}, nil
+	return nil, err
 }
 
 // GetKeyFromEnv 从环境变量获取密钥（开发调试用）
@@ -148,4 +213,41 @@ func GenerateRandomKey() ([]byte, error) {
 		return nil, fmt.Errorf("生成随机密钥失败: %w", err)
 	}
 	return key, nil
+}
+
+// AES加密（内部使用）
+func encryptWithKey(key []byte, plain string) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	b := []byte(plain)
+	ciphertext := make([]byte, aes.BlockSize+len(b))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return "", err
+	}
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], b)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// AES解密（内部使用）
+func decryptWithKey(key []byte, cryptoText string) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(cryptoText)
+	if err != nil {
+		return "", err
+	}
+	if len(ciphertext) < aes.BlockSize {
+		return "", errors.New("密文太短")
+	}
+	iv := ciphertext[:aes.BlockSize]
+	ciphertext = ciphertext[aes.BlockSize:]
+	stream := cipher.NewCFBDecrypter(block, iv)
+	stream.XORKeyStream(ciphertext, ciphertext)
+	return string(ciphertext), nil
 }
